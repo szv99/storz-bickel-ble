@@ -11,3 +11,7 @@ class VaporizerDisconnected(VaporizerError):
 
 class UnsupportedDevice(VaporizerError):
     """The device name / services do not match a known Storz & Bickel family."""
+
+
+class UnsupportedOperation(VaporizerError):
+    """The connected device family does not support this command."""

@@ -8,12 +8,14 @@ starts with the same command byte.
 from __future__ import annotations
 
 import asyncio
-from typing import Dict
+from typing import Dict, Optional
 
 from ..exceptions import VaporizerDisconnected
 from ..models import HeaterMode
 from ..puff import PuffDetector
-from .base import BaseProtocol, tenths, u16, u24
+from .base import (BOOST_OFFSET, BRIGHTNESS, HEATER, HEATER_MODE, LOCATE,
+                   SUPERBOOST_OFFSET, TEMPERATURE, UNIT, VIBRATION, BaseProtocol,
+                   p16, tenths, u16, u24)
 
 SERVICE = "00000000-5354-4f52-5a26-4249434b454c"
 CHAR = "00000001-5354-4f52-5a26-4249434b454c"
@@ -22,6 +24,21 @@ CMD_STATUS = 0x01
 CMD_VERSION = 0x02
 CMD_USAGE = 0x04
 CMD_IDENTITY = 0x05
+CMD_SETTINGS = 0x06
+CMD_LOCATE = 0x0D
+
+# cmd 0x01 write mask (byte 1)
+WRITE_TARGET = 1 << 1
+WRITE_BOOST = 1 << 2
+WRITE_SUPERBOOST = 1 << 3
+WRITE_HEATER = 1 << 5
+WRITE_SETTINGS = 1 << 7
+
+# cmd 0x06 write mask (byte 1)
+SETTINGS_WRITE_BRIGHTNESS = 1 << 0
+SETTINGS_WRITE_VIBRATION = 1 << 3
+
+BRIGHTNESS_LEVELS = 9
 
 TEMP_NOT_AVAILABLE = 0x8000
 
@@ -74,10 +91,28 @@ def parse_identity(state, d: bytes) -> None:
             state.serial = serial
 
 
+def parse_settings(state, d: bytes) -> None:
+    """cmd 0x06: [2] brightness 1-9, [5] vibration."""
+    if len(d) >= 6 and d[0] == CMD_SETTINGS:
+        state.brightness = round(d[2] * 100 / BRIGHTNESS_LEVELS)
+        state.vibration = bool(d[5])
+
+
+def packet(cmd: int, size: int = 20, **fields) -> bytearray:
+    """Zero-filled request; ``fields`` maps ``b<offset>`` to a byte value."""
+    p = bytearray(size)
+    p[0] = cmd
+    for key, value in fields.items():
+        p[int(key[1:])] = value
+    return p
+
+
 class QvapProtocol(BaseProtocol):
     poll_interval = 0.5         # same as the vendor app
     max_misses = 4              # unanswered polls in a row before giving up
     usage_every = 120           # refresh usage counters every N polls (~1 min)
+    features = frozenset({HEATER, HEATER_MODE, TEMPERATURE, BOOST_OFFSET, SUPERBOOST_OFFSET,
+                          BRIGHTNESS, VIBRATION, UNIT, LOCATE})
 
     def __init__(self, *a, **kw):
         super().__init__(*a, **kw)
@@ -94,21 +129,65 @@ class QvapProtocol(BaseProtocol):
         if fut and not fut.done():
             fut.set_result(d)
 
-    async def request(self, cmd: int, timeout: float = 1.5) -> bytes:
+    async def send(self, data: bytes) -> None:
+        try:
+            await self.write(CHAR, data, response=True)
+        except Exception:
+            if not self.client.is_connected:
+                raise
+            await self.write(CHAR, data, response=False)
+
+    async def request(self, cmd: int, timeout: float = 1.5, data: Optional[bytes] = None) -> bytes:
+        """Send ``data`` (default: bare ``cmd`` packet) and await the matching answer."""
         fut = asyncio.get_running_loop().create_future()
         self._waiters[cmd] = fut
-        packet = bytearray(20)
-        packet[0] = cmd
         try:
-            try:
-                await self.write(CHAR, packet, response=True)
-            except Exception:
-                if not self.client.is_connected:
-                    raise
-                await self.write(CHAR, packet, response=False)
+            await self.send(data if data is not None else packet(cmd))
             return await asyncio.wait_for(fut, timeout)
         finally:
             self._waiters.pop(cmd, None)
+
+    async def _refresh_settings(self) -> None:
+        try:
+            parse_settings(self.state, await self.request(
+                CMD_SETTINGS, data=packet(CMD_SETTINGS, 7)))
+        except asyncio.TimeoutError:
+            pass
+
+    # --- control ----------------------------------------------------------------
+
+    async def set_heater_mode(self, mode: HeaterMode) -> None:
+        await self.send(packet(CMD_STATUS, b1=WRITE_HEATER, b11=int(mode)))
+
+    async def set_target(self, celsius: float) -> None:
+        raw = p16(round(celsius * 10))
+        await self.send(packet(CMD_STATUS, b1=WRITE_TARGET, b4=raw[0], b5=raw[1]))
+
+    async def set_boost_offset(self, celsius: int) -> None:
+        await self.send(packet(CMD_STATUS, b1=WRITE_BOOST, b6=celsius))
+
+    async def set_superboost_offset(self, celsius: int) -> None:
+        await self.send(packet(CMD_STATUS, b1=WRITE_SUPERBOOST, b7=celsius))
+
+    async def set_fahrenheit(self, on: bool) -> None:
+        await self.send(packet(CMD_STATUS, b1=WRITE_SETTINGS,
+                               b14=SETTINGS_FAHRENHEIT if on else 0, b15=SETTINGS_FAHRENHEIT))
+
+    async def set_brightness(self, percent: int) -> None:
+        level = max(1, min(BRIGHTNESS_LEVELS, round(percent * BRIGHTNESS_LEVELS / 100)))
+        await self.send(packet(CMD_SETTINGS, 7, b1=SETTINGS_WRITE_BRIGHTNESS, b2=level))
+        await self._refresh_settings()
+        self.changed()
+
+    async def set_vibration(self, on: bool) -> None:
+        await self.send(packet(CMD_SETTINGS, 7, b1=SETTINGS_WRITE_VIBRATION, b5=int(on)))
+        await self._refresh_settings()
+        self.changed()
+
+    async def locate(self) -> None:
+        await self.send(packet(CMD_LOCATE, b1=1))
+
+    # --- lifecycle --------------------------------------------------------------
 
     async def start(self) -> None:
         await self.notify(CHAR, self._on_notify)
@@ -128,6 +207,7 @@ class QvapProtocol(BaseProtocol):
                 parse(self.state, await self.request(cmd))
             except asyncio.TimeoutError:
                 pass
+        await self._refresh_settings()
         self.puffs.reset()
         self.puffs.feed(self.state)
         self.changed()

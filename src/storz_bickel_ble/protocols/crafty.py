@@ -9,7 +9,8 @@ import contextlib
 
 from ..exceptions import VaporizerDisconnected
 from ..models import HeaterMode
-from .base import BaseProtocol, tenths, u16
+from . import base as feat
+from .base import BaseProtocol, p16, tenths, u16
 
 
 def _uuid(n: int) -> str:
@@ -30,12 +31,21 @@ SERIAL = _uuid(0x52)            # ascii, 8 chars
 USE_HOURS = _uuid(0x23)         # u16
 USE_MINUTES = _uuid(0x1E3)      # u16, newer firmware only
 STATUS1 = _uuid(0x93)           # u16 bitfield, notify on newer firmware
-STATUS2 = _uuid(0x1C3)          # u16 bitfield, notify
+STATUS2 = _uuid(0x1C3)          # u16 bitfield, notify, read-modify-write
+BRIGHTNESS = _uuid(0x51)        # u16 0-100
+AUTO_OFF_SETTING = _uuid(0x61)  # u16 s, write needs UNLOCK first
+HEATER_ON = _uuid(0x81)         # write 2 zero bytes
+HEATER_OFF = _uuid(0x91)        # write 2 zero bytes
+UNLOCK = _uuid(0x1B3)           # u16 code
+
+UNLOCK_AUTO_OFF = 815
 
 STATUS1_HEATER = 1 << 4
 STATUS1_BOOST = 1 << 5
 STATUS1_SUPERBOOST = 1 << 6
+STATUS2_VIBRATION_OFF = 1 << 0
 STATUS2_SETPOINT_REACHED = 1 << 2
+STATUS2_LOCATE = 1 << 3         # device clears it after ~30 s
 
 SUPERBOOST_EXTRA = 15           # superboost = target + boost + 15 °C (fixed in the app)
 
@@ -49,6 +59,9 @@ def _temp(raw: int) -> float:
 
 class CraftyProtocol(BaseProtocol):
     poll_interval = 5.0
+    features = frozenset({feat.HEATER, feat.TEMPERATURE, feat.BOOST_OFFSET, feat.BRIGHTNESS,
+                          feat.VIBRATION, feat.AUTO_OFF, feat.LOCATE})
+    auto_off_range = (10, 300)
 
     def _status1(self, raw: int) -> None:
         s = self.state
@@ -66,6 +79,7 @@ class CraftyProtocol(BaseProtocol):
 
     def _status2(self, raw: int) -> None:
         self.state.setpoint_reached = self.state.heater_on and bool(raw & STATUS2_SETPOINT_REACHED)
+        self.state.vibration = not raw & STATUS2_VIBRATION_OFF
         self.state.raw["status2"] = raw
 
     def _current(self, raw: int) -> None:
@@ -99,6 +113,10 @@ class CraftyProtocol(BaseProtocol):
         with contextlib.suppress(Exception):
             s.auto_shutoff_s = u16(await self.read(AUTO_OFF_LEFT))
         with contextlib.suppress(Exception):
+            s.auto_off_setting_s = u16(await self.read(AUTO_OFF_SETTING))
+        with contextlib.suppress(Exception):
+            s.brightness = u16(await self.read(BRIGHTNESS))
+        with contextlib.suppress(Exception):
             minutes = u16(await self.read(USE_HOURS)) * 60
             with contextlib.suppress(Exception):
                 minutes += u16(await self.read(USE_MINUTES))
@@ -114,6 +132,50 @@ class CraftyProtocol(BaseProtocol):
             with contextlib.suppress(Exception):    # missing on older firmware
                 await self.notify(uuid, self._notifier(apply))
         self.changed()
+
+    # --- control ----------------------------------------------------------------
+
+    async def _update_status2(self, mask: int, value: bool) -> None:
+        raw = u16(await self.read(STATUS2))
+        raw = raw | mask if value else raw & ~mask
+        await self.write(STATUS2, p16(raw))
+        self._status2(raw)
+        self.changed()
+
+    async def set_heater_mode(self, mode: HeaterMode) -> None:
+        await self.write(HEATER_ON if mode else HEATER_OFF, p16(0))
+
+    async def set_target(self, celsius: float) -> None:
+        await self.write(TARGET_TEMP, p16(round(celsius * 10)))
+        if self.state.boost_offset is not None:     # the vendor app re-sends the boost too
+            await self.write(BOOST_OFFSET, p16(self.state.boost_offset * 10))
+        self.state.target_temp = tenths(round(celsius * 10))
+        self.changed()
+
+    async def set_boost_offset(self, celsius: int) -> None:
+        await self.write(BOOST_OFFSET, p16(celsius * 10))
+        self.state.boost_offset = celsius
+        self.state.superboost_offset = celsius + SUPERBOOST_EXTRA
+        self.changed()
+
+    async def set_brightness(self, percent: int) -> None:
+        await self.write(BRIGHTNESS, p16(percent))
+        self.state.brightness = percent
+        self.changed()
+
+    async def set_vibration(self, on: bool) -> None:
+        await self._update_status2(STATUS2_VIBRATION_OFF, not on)
+
+    async def set_auto_off(self, seconds: int) -> None:
+        await self.write(UNLOCK, p16(UNLOCK_AUTO_OFF))
+        await self.write(AUTO_OFF_SETTING, p16(seconds))
+        self.state.auto_off_setting_s = seconds
+        self.changed()
+
+    async def locate(self) -> None:
+        await self._update_status2(STATUS2_LOCATE, True)
+
+    # --- lifecycle --------------------------------------------------------------
 
     async def poll(self) -> None:
         # Status 1 does not notify on older firmware, and the read doubles as a

@@ -59,6 +59,10 @@ class VaporizerState:
     charging: Optional[bool] = None
     fahrenheit: Optional[bool] = None
 
+    brightness: Optional[int] = None       # display / LED brightness, percent
+    vibration: Optional[bool] = None
+    auto_off_setting_s: Optional[int] = None   # configured auto-off time (Crafty, Volcano)
+
     heater_runtime_min: Optional[int] = None
     charging_time_min: Optional[int] = None
 

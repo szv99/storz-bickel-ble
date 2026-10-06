@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "storz-bickel-ble"
-version = "0.1.0"
-description = "Unofficial async Bluetooth LE library for reading the state of Storz & Bickel vaporizers (Venty, Veazy, Crafty+, Mighty+, Volcano Hybrid)"
+version = "0.2.0"
+description = "Unofficial async Bluetooth LE library to monitor and control Storz & Bickel vaporizers (Venty, Veazy, Crafty+, Mighty+, Volcano Hybrid)"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]

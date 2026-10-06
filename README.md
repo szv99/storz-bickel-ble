@@ -1,16 +1,24 @@
 # storz-bickel-ble
 
-Unofficial async Python library for reading Storz & Bickel vaporizers over Bluetooth LE,
-built on [bleak](https://github.com/hbldh/bleak) (macOS, Linux, Windows).
+Unofficial async Python library to **monitor and control** Storz & Bickel vaporizers
+over Bluetooth LE. Built on [bleak](https://github.com/hbldh/bleak), so it runs on
+macOS, Linux and Windows.
 
-It is **read-only**: it reads temperatures, heater mode, battery, auto-off timer, usage
-counters and serial/firmware. On Venty/Veazy it also counts **puffs**. It never sends
-heating or settings commands.
+- **Monitor:** read temperatures, heater mode, battery, charging, auto-off timer,
+  brightness, vibration, usage counters, serial and firmware. On Venty/Veazy it also
+  counts **puffs**.
+- **Control:** heater on/off, target temperature, boost offsets, Volcano air pump,
+  brightness, vibration, auto-off time, display unit and find-my.
+- **Easy to call:** one `connect()` / `monitor()` call, plain `await vap.heater_on()`
+  methods, clear errors, and a CLI for everything.
 
 > Not affiliated with, endorsed by or supported by Storz & Bickel GmbH. "Storz & Bickel",
 > "Venty", "Veazy", "Crafty", "Mighty" and "Volcano" are trademarks of their owners.
 > The protocol was documented by observing the device and the behaviour of the official
 > web app, for interoperability.
+
+> **Safety:** heater commands switch on a real heating element. Don't start heating a
+> device you are not attending.
 
 ## Supported devices
 
@@ -23,6 +31,28 @@ heating or settings commands.
 
 Reports (working or not) from Crafty+, Mighty+, Veazy and Volcano owners are very welcome.
 `storz-bickel-ble info --json` output is the most useful thing to attach.
+
+### What each device can do
+
+| Control | Venty / Veazy | Crafty+ / Mighty+ | Volcano Hybrid |
+|---|---|---|---|
+| heater on / off | yes | yes | yes |
+| boost / superboost mode | yes¹ | — (button only) | — |
+| target temperature | 40–210 °C | 40–210 °C | 40–230 °C |
+| boost offset | yes | yes | — |
+| superboost offset | yes | — (always boost + 15 °C) | — |
+| air pump | — | — | yes |
+| brightness | yes (9 levels) | yes | yes |
+| vibration | yes | yes | yes |
+| auto-off time | — (fixed) | 10–300 s | 60–21600 s |
+| display unit °C/°F | yes | — | yes |
+| locate (find-my) | yes | yes | — |
+
+¹ The official app only switches the Venty heater on and off. Boost and superboost over
+BLE write the same mode byte the device reports, and are experimental.
+
+Verified on a Venty so far: target temperature, brightness, vibration and all reading.
+Call `vap.supports("pump")` (or check `vap.features`) to test for a feature at runtime.
 
 ## Install
 
@@ -39,13 +69,68 @@ storz-bickel-ble scan                      # list nearby devices
 storz-bickel-ble info                      # connect once, print everything
 storz-bickel-ble monitor                   # follow the state, reconnecting forever
 storz-bickel-ble monitor --name VY123456 --json
+
+storz-bickel-ble temp 185                  # target temperature
+storz-bickel-ble heat on                   # on | off | boost | superboost
+storz-bickel-ble pump on                   # Volcano
+storz-bickel-ble boost-offset 15
+storz-bickel-ble superboost-offset 30
+storz-bickel-ble brightness 60             # percent
+storz-bickel-ble vibration off
+storz-bickel-ble auto-off 120              # seconds
+storz-bickel-ble unit F
+storz-bickel-ble locate
 ```
+
+Every command accepts `--name`, `--address`, `--timeout` and `--json`. Control commands
+wait until the device confirms the change, then print the new state:
 
 ```
 22:22:41  Venty  heater=ON  temp=-/210°C  reached=yes  battery=31%  auto-off=119s  puffs=2 PUFF
 ```
 
 ## Python
+
+### Control
+
+```python
+import asyncio
+from storz_bickel_ble import connect
+
+async def main():
+    async with connect() as vap:                 # first device found; or connect("VY123456")
+        await vap.set_temperature(185)
+        await vap.heater_on()
+        state = await vap.wait_for(lambda s: s.setpoint_reached, timeout=300)
+        print("ready at", state.target_temp, "°C, battery", state.battery, "%")
+
+asyncio.run(main())
+```
+
+All control methods are coroutines on the connected client:
+
+| Method | Notes |
+|---|---|
+| `heater_on()`, `heater_off()`, `set_heater(on)` | all devices |
+| `boost()`, `superboost()`, `set_heater_mode(HeaterMode.X)` | Venty / Veazy |
+| `set_temperature(celsius)` | base target; boost offsets are added on top |
+| `set_boost_offset(c)`, `set_superboost_offset(c)` | offsets in °C |
+| `pump_on()`, `pump_off()`, `set_pump(on)` | Volcano |
+| `set_brightness(percent)` | 0–100 on every device |
+| `set_vibration(on)` | |
+| `set_auto_off(seconds)` | Crafty, Volcano |
+| `set_unit("C" \| "F")` | display unit |
+| `locate()` | device vibrates / blinks |
+| `wait_for(predicate, timeout)` | wait until `predicate(state)` is true |
+
+Errors:
+- `UnsupportedOperation`: the device can't do that, e.g. `pump_on()` on a Venty.
+- `ValueError`: the value is out of range, with the allowed range in the message.
+- `VaporizerDisconnected`: the link is gone.
+
+All of them except `ValueError` derive from `VaporizerError`.
+
+### Monitor
 
 Follow a device forever, with automatic reconnects:
 
@@ -63,22 +148,18 @@ async def main():
 asyncio.run(main())
 ```
 
-Single connection, full control over the lifecycle:
+Within one connection you can stream changes, or register callbacks:
 
 ```python
-from storz_bickel_ble import VaporizerClient, VaporizerDisconnected, find_device
-
-device = await find_device()               # first S&B device seen, or None
-async with VaporizerClient(device) as vap:
+async with connect() as vap:
     print(vap.state)                       # filled in before connect() returns
-    try:
-        async for state in vap.updates():  # current state, then every change
-            ...
-    except VaporizerDisconnected:
-        ...
+    remove = vap.add_listener(lambda state: print(state.battery))
+    async for state in vap.updates():      # current state, then every change
+        ...                                # raises VaporizerDisconnected on link loss
 ```
 
-Callbacks instead of iteration: `remove = vap.add_listener(lambda state: ...)`.
+For full control over discovery, use `find_device()` / `discover()` and
+`VaporizerClient(device)`.
 
 ### `VaporizerState`
 
@@ -92,6 +173,8 @@ Callbacks instead of iteration: `remove = vap.add_listener(lambda state: ...)`.
 | `heater_mode`, `heater_on`, `boost`, `superboost` | `HeaterMode.OFF / ON / BOOST / SUPERBOOST` |
 | `setpoint_reached` | heater is at temperature |
 | `auto_shutoff_s` | seconds until auto-off |
+| `auto_off_setting_s` | configured auto-off time (Crafty, Volcano) |
+| `brightness`, `vibration` | display brightness in percent, vibration enabled |
 | `pump_on` | Volcano only |
 | `battery`, `charging` | percent, charger connected (Venty) |
 | `heater_runtime_min`, `charging_time_min` | lifetime counters |
@@ -150,14 +233,20 @@ All multi-byte values are little-endian. Temperatures are tenths of °C.
 | `0x05` identity | serial = ASCII `[15..16]` + `[9..14]`; `[18]` Veazy colour |
 | `0x06` settings (7-byte request) | `[2]` brightness 1-9, `[5]` vibration, `[6]` boost timeout disabled |
 
-Writes use `0x01` with a field mask in byte 1:
-- `0x02`: target temperature
-- `0x04`: boost offset
-- `0x08`: superboost offset
-- `0x20`: heater
-- `0x80`: settings
+Writes use the same 20-byte packets, with a field mask in byte 1.
 
-They are listed here for completeness only. This library does not send them.
+`0x01` write masks:
+- `0x02`: target temperature in `[4..5]`
+- `0x04`: boost offset in `[6]`
+- `0x08`: superboost offset in `[7]`
+- `0x20`: heater mode in `[11]`
+- `0x80`: settings, with values in `[14]` and the mask of bits to change in `[15]`
+
+`0x06` write masks (7-byte packet):
+- `0x01`: brightness 1-9 in `[2]`
+- `0x08`: vibration in `[5]`
+
+Find-my is `0x0D` with `[1] = 1`.
 
 ### Crafty+ / Mighty+
 
@@ -175,7 +264,10 @@ They are listed here for completeness only. This library does not send them.
 | `0052` | serial ASCII |
 | `0023` / `01e3` | use hours / minutes |
 | `0093` | status 1 (notify on newer fw): bit4 heater, bit5 boost, bit6 superboost |
-| `01c3` | status 2 (notify): bit2 setpoint reached |
+| `01c3` | status 2 (notify, read-modify-write): bit0 vibration off, bit2 setpoint reached, bit3 find-my |
+| `0051` | brightness 0-100 |
+| `0061` | auto-off time s (write `815` to `01b3` first) |
+| `0081` / `0091` | heater on / off (write 2 zero bytes) |
 
 Superboost is not reported. The official app shows it as target + boost + 15 °C.
 
@@ -193,6 +285,15 @@ Superboost is not reported. The official app shows it as target + boost + 15 °C
 | `10100008` | serial ASCII |
 | `1010000c` | register 1 (notify): bit5 heater, bit13 pump |
 | `1010000d` | register 2 (notify): bit9 °F display |
+| `1010000e` | register 3: bit10 vibration off |
+| `10110005` | brightness 0-100 |
+| `1011000d` | auto-off time s |
+| `1011000f` / `10110010` | heater on / off (write 1 zero byte) |
+| `10110013` / `10110014` | pump on / off (write 1 zero byte) |
+
+Writing the target temperature uses a u32 (it reads back as u16). Registers 2 and 3 are
+written as a u32. The low 16 bits are the bit mask to change; bit 16 is 1 to set those bits
+and 0 to clear them.
 
 There is no "reached" flag on the Volcano. The library treats the setpoint as reached
 within ±1 °C of the target, the same rule the official app uses.
