@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "storz-bickel-ble"
+version = "0.1.0"
+description = "Unofficial async Bluetooth LE library for reading the state of Storz & Bickel vaporizers (Venty, Veazy, Crafty+, Mighty+, Volcano Hybrid)"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "szv99", email = "szvmx@icloud.com" }]
+requires-python = ">=3.9"
+dependencies = ["bleak>=0.22"]
+keywords = ["bluetooth", "ble", "bleak", "storz", "bickel", "venty", "crafty", "mighty", "volcano", "vaporizer"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: AsyncIO",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Home Automation",
+    "Topic :: System :: Hardware",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/szv99/storz-bickel-ble"
+Issues = "https://github.com/szv99/storz-bickel-ble/issues"
+
+[project.scripts]
+storz-bickel-ble = "storz_bickel_ble.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/storz_bickel_ble"]
