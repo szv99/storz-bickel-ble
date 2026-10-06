@@ -109,7 +109,7 @@ class CraftyProtocol(BaseProtocol):
         s.battery = u16(await self.read(BATTERY))
         with contextlib.suppress(Exception):
             s.boost_offset = round(tenths(u16(await self.read(BOOST_OFFSET))))
-            s.superboost_offset = s.boost_offset + SUPERBOOST_EXTRA
+            s.superboost_offset = SUPERBOOST_EXTRA
         with contextlib.suppress(Exception):
             s.auto_shutoff_s = u16(await self.read(AUTO_OFF_LEFT))
         with contextlib.suppress(Exception):
@@ -155,7 +155,6 @@ class CraftyProtocol(BaseProtocol):
     async def set_boost_offset(self, celsius: int) -> None:
         await self.write(BOOST_OFFSET, p16(celsius * 10))
         self.state.boost_offset = celsius
-        self.state.superboost_offset = celsius + SUPERBOOST_EXTRA
         self.changed()
 
     async def set_brightness(self, percent: int) -> None:

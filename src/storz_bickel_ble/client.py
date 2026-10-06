@@ -70,6 +70,7 @@ class VaporizerClient:
         try:
             self._handler = handler_for(self._family)(
                 self._client, self._state, self._changed, self._op_timeout)
+            self._state.max_temp = self._handler.temp_range[1]
             await self._handler.start()
         except BaseException:
             await self.disconnect()
@@ -171,6 +172,7 @@ class VaporizerClient:
         await self._live().set_boost_offset(int(celsius))
 
     async def set_superboost_offset(self, celsius: int) -> None:
+        """Extra °C on top of the boost offset in superboost."""
         spec = self._require(feat.SUPERBOOST_OFFSET)
         self._check("superboost offset", celsius, *spec.offset_range)
         await self._live().set_superboost_offset(int(celsius))

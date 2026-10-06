@@ -48,7 +48,8 @@ class VaporizerState:
     current_temp: Optional[float] = None
     target_temp: Optional[float] = None
     boost_offset: Optional[int] = None
-    superboost_offset: Optional[int] = None
+    superboost_offset: Optional[int] = None     # added on top of the boost offset
+    max_temp: Optional[float] = None            # device limit; boosts are capped here
 
     heater_mode: HeaterMode = HeaterMode.OFF
     setpoint_reached: bool = False
@@ -86,14 +87,15 @@ class VaporizerState:
 
     @property
     def effective_target_temp(self) -> Optional[float]:
-        """Target including the active boost / superboost offset."""
+        """Target including the active boost (+ superboost) offset, capped at ``max_temp``."""
         if self.target_temp is None:
             return None
+        t = self.target_temp
+        if (self.boost or self.superboost) and self.boost_offset is not None:
+            t += self.boost_offset
         if self.superboost and self.superboost_offset is not None:
-            return self.target_temp + self.superboost_offset
-        if self.boost and self.boost_offset is not None:
-            return self.target_temp + self.boost_offset
-        return self.target_temp
+            t += self.superboost_offset
+        return min(t, self.max_temp) if self.max_temp is not None else t
 
     @property
     def age(self) -> float:

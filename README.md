@@ -40,7 +40,7 @@ Reports (working or not) from Crafty+, Mighty+, Veazy and Volcano owners are ver
 | boost / superboost mode | yes¹ | — (button only) | — |
 | target temperature | 40–210 °C | 40–210 °C | 40–230 °C |
 | boost offset | yes | yes | — |
-| superboost offset | yes | — (always boost + 15 °C) | — |
+| superboost offset | yes | — (fixed +15 °C on top of boost) | — |
 | air pump | — | — | yes |
 | brightness | yes (9 levels) | yes | yes |
 | vibration | yes | yes | yes |
@@ -114,7 +114,7 @@ All control methods are coroutines on the connected client:
 | `heater_on()`, `heater_off()`, `set_heater(on)` | all devices |
 | `boost()`, `superboost()`, `set_heater_mode(HeaterMode.X)` | Venty / Veazy |
 | `set_temperature(celsius)` | base target; boost offsets are added on top |
-| `set_boost_offset(c)`, `set_superboost_offset(c)` | offsets in °C |
+| `set_boost_offset(c)`, `set_superboost_offset(c)` | offsets in °C (superboost is added on top of boost) |
 | `pump_on()`, `pump_off()`, `set_pump(on)` | Volcano |
 | `set_brightness(percent)` | 0–100 on every device |
 | `set_vibration(on)` | |
@@ -168,8 +168,9 @@ For full control over discovery, use `find_device()` / `discover()` and
 | `family` | `DeviceFamily.VENTY / VEAZY / CRAFTY / VOLCANO` |
 | `name`, `serial`, `firmware` | identity |
 | `current_temp`, `target_temp` | °C (always Celsius; `fahrenheit` = the device's display unit) |
-| `boost_offset`, `superboost_offset` | °C added to the target in boost / superboost |
-| `effective_target_temp` | target including the active boost offset |
+| `boost_offset`, `superboost_offset` | °C added to the target in boost; superboost adds both |
+| `max_temp` | device limit (210 °C, Volcano 230 °C) |
+| `effective_target_temp` | target including the active boost offsets, capped at `max_temp` |
 | `heater_mode`, `heater_on`, `boost`, `superboost` | `HeaterMode.OFF / ON / BOOST / SUPERBOOST` |
 | `setpoint_reached` | heater is at temperature |
 | `auto_shutoff_s` | seconds until auto-off |
@@ -227,7 +228,7 @@ All multi-byte values are little-endian. Temperatures are tenths of °C.
 
 | Cmd | Response layout |
 |---|---|
-| `0x01` status | `[2..3]` current temp (`0x8000` = n/a), `[4..5]` target, `[6]` boost offset °C, `[7]` superboost offset °C, `[8]` battery %, `[9]+[10]` auto-off s, `[11]` heater mode 0 off / 1 on / 2 boost / 3 superboost, `[13]` charger, `[14]` flags (bit0 °F display, bit1 setpoint reached, bit3 eco charge, bit5 eco voltage, bit6 boost visualization), `[16]` bit0 BLE always on |
+| `0x01` status | `[2..3]` current temp (`0x8000` = n/a), `[4..5]` target, `[6]` boost offset °C, `[7]` superboost offset °C (on top of boost), `[8]` battery %, `[9]+[10]` auto-off s, `[11]` heater mode 0 off / 1 on / 2 boost / 3 superboost, `[13]` charger, `[14]` flags (bit0 °F display, bit1 setpoint reached, bit3 eco charge, bit5 eco voltage, bit6 boost visualization), `[16]` bit0 BLE always on |
 | `0x02` version | `[1]` flags (bit0 application running), `[2..7]` firmware ASCII, `[11..16]` bootloader ASCII |
 | `0x04` usage | `[1..3]` heater runtime min (u24), `[4..6]` charging time min (u24) |
 | `0x05` identity | serial = ASCII `[15..16]` + `[9..14]`; `[18]` Veazy colour |
